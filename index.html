@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>GPS Anomaly Detector</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #eaf5ff;
+            color: #333;
+            text-align: center;
+        }
+        #container {
+            width: 90%;
+            max-width: 400px;
+            padding: 25px;
+            background-color: #005A9C;
+            color: white;
+            border-radius: 15px;
+            box-shadow: 0 8px 25px rgba(0, 90, 156, 0.2);
+        }
+        #header {
+            margin-bottom: 20px;
+        }
+        h1 {
+            font-size: 1.8em;
+            margin: 0;
+        }
+        #lab-name {
+            font-size: 1em;
+            font-weight: 300;
+            color: #cce4ff;
+            margin-top: 5px;
+        }
+        #status {
+            font-size: 1.2em;
+            color: #cce4ff;
+            margin-bottom: 25px;
+            min-height: 30px;
+        }
+        #info-card {
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 25px;
+        }
+        #info-card div {
+            font-size: 1.1em;
+        }
+        #info-card span {
+            font-weight: bold;
+            display: block;
+            margin-top: 4px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #alert-box {
+            display: none; /* Hidden by default */
+            margin-top: 20px;
+            background-color: rgba(255, 209, 102, 0.1);
+            border: 1px solid #FFD166;
+            border-radius: 10px;
+            padding: 15px;
+        }
+        #alert-title {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #FFD166;
+            animation: blink 1.2s linear infinite;
+        }
+        #alert-description {
+            font-size: 1em;
+            color: #cce4ff;
+            margin-top: 8px;
+        }
+        button {
+            width: 100%;
+            padding: 15px 30px;
+            font-size: 1.2em;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 10px;
+            border: none;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.2s;
+        }
+        @keyframes blink {
+            50% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="container">
+        <div id="header">
+            <h1>GPS Anomaly Detector</h1>
+            <p id="lab-name">ASTRAM LAB, IITH</p>
+        </div>
+        
+        <p id="status">Press "Start" to begin monitoring.</p>
+
+        <div id="info-card">
+            <div>Latitude: <span id="lat">---</span></div>
+            <hr style="border-color: rgba(255,255,255,0.2); margin: 10px 0;">
+            <div>Longitude: <span id="lon">---</span></div>
+        </div>
+
+        <button id="startButton" onclick="startMonitoring()">Start Monitoring</button>
+        
+        <div id="alert-box">
+            <p id="alert-title">🚨 ANOMALY DETECTED 🚨</p>
+            <p id="alert-description">Details will appear here.</p>
+        </div>
+    </div>
+
+    <!-- SCRIPT FOR THE WEB WORKER (BACKGROUND THREAD) -->
+    <script id="worker-script" type="text/worker">
+        let lastPosition = null;
+        const DISTANCE_THRESHOLD_METERS = 700;
+
+        function getDistanceMeters(lat1, lon1, lat2, lon2) {
+            const R = 6371e3;
+            const phi1 = lat1 * Math.PI / 180, phi2 = lat2 * Math.PI / 180;
+            const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+            const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) + Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        self.onmessage = function(e) {
+            const currentPosition = e.data;
+            if (lastPosition) {
+                const distanceMoved = getDistanceMeters(
+                    lastPosition.latitude, lastPosition.longitude,
+                    currentPosition.latitude, currentPosition.longitude
+                );
+                if (distanceMoved > DISTANCE_THRESHOLD_METERS) {
+                    self.postMessage({ type: 'spoof', distance: distanceMoved });
+                }
+            }
+            lastPosition = currentPosition;
+        };
+    </script>
+
+    <!-- SCRIPT FOR THE MAIN PAGE (UI THREAD) -->
+    <script>
+        const statusEl = document.getElementById('status');
+        const latEl = document.getElementById('lat');
+        const lonEl = document.getElementById('lon');
+        const startButton = document.getElementById('startButton');
+        const alertBoxEl = document.getElementById('alert-box');
+        const alertTitleEl = document.getElementById('alert-title');
+        const alertDescriptionEl = document.getElementById('alert-description');
+        
+        let gpsWorker = null;
+        let jammingTimer = null;
+        let watchId = null;
+        const JAMMING_TIMEOUT_MS = 10000;
+
+        function startMonitoring() {
+            startButton.style.display = 'none';
+            statusEl.textContent = "Requesting GPS permission...";
+
+            const workerScript = document.getElementById('worker-script').textContent;
+            const workerBlob = new Blob([workerScript], { type: 'application/javascript' });
+            gpsWorker = new Worker(URL.createObjectURL(workerBlob));
+            
+            gpsWorker.onmessage = function(e) {
+                if (e.data.type === 'spoof') {
+                    const distanceKm = (e.data.distance / 1000).toFixed(2);
+                    displayAlert('SPOOFING', `An anomalous location jump of ${distanceKm} km was detected.`);
+                }
+            };
+            
+            beginWatch();
+        }
+
+        function displayAlert(type, message) {
+            alertTitleEl.textContent = `🚨 ${type} DETECTED 🚨`;
+            alertDescriptionEl.textContent = message;
+            alertBoxEl.style.display = 'block';
+            
+            // Stop all monitoring after any alert
+            clearTimeout(jammingTimer);
+            if (watchId) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            if(gpsWorker) {
+                gpsWorker.terminate();
+                gpsWorker = null;
+            }
+        }
+
+        function beginWatch() {
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+
+            // Set the initial timer. If we don't get a signal within 10s, it's a jam.
+            jammingTimer = setTimeout(() => {
+                displayAlert('JAMMING', `The GPS signal was not received for more than ${JAMMING_TIMEOUT_MS / 1000} seconds.`);
+            }, JAMMING_TIMEOUT_MS);
+
+            watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    // SUCCESS: We got a signal. Clear the old timer and set a new one.
+                    clearTimeout(jammingTimer);
+                    jammingTimer = setTimeout(() => {
+                         displayAlert('JAMMING', `The GPS signal was lost for more than ${JAMMING_TIMEOUT_MS / 1000} seconds.`);
+                    }, JAMMING_TIMEOUT_MS);
+
+                    statusEl.textContent = "Monitoring Active...";
+                    const { latitude, longitude } = position.coords;
+                    latEl.textContent = latitude.toFixed(6);
+                    lonEl.textContent = longitude.toFixed(6);
+                    if(gpsWorker) gpsWorker.postMessage({ latitude, longitude });
+                },
+                (error) => {
+                    // ERROR: Don't clear the timer here. Let it run out.
+                    if (error.code === 1) { // PERMISSION_DENIED
+                        clearTimeout(jammingTimer); // Stop everything if permission denied
+                        statusEl.textContent = `Error: Location permission denied.`;
+                        startButton.style.display = 'block';
+                    } else {
+                        statusEl.textContent = "GPS signal lost...";
+                    }
+                },
+                { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+            );
+        }
+    </script>
+</body>
+</html>
+
