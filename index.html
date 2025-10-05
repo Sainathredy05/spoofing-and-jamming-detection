@@ -162,11 +162,13 @@
         let gpsWorker = null;
         let jammingTimer = null;
         let watchId = null;
+        let isFirstFixAcquired = false; // Flag to track the initial GPS lock
         const JAMMING_TIMEOUT_MS = 10000;
 
         function startMonitoring() {
             startButton.style.display = 'none';
-            statusEl.textContent = "Requesting GPS permission...";
+            statusEl.textContent = "Acquiring initial GPS signal...";
+            isFirstFixAcquired = false;
 
             const workerScript = document.getElementById('worker-script').textContent;
             const workerBlob = new Blob([workerScript], { type: 'application/javascript' });
@@ -202,32 +204,35 @@
         function beginWatch() {
             if (watchId) navigator.geolocation.clearWatch(watchId);
 
-            // Set the initial timer. If we don't get a signal within 10s, it's a jam.
-            jammingTimer = setTimeout(() => {
-                displayAlert('JAMMING', `The GPS signal was not received for more than ${JAMMING_TIMEOUT_MS / 1000} seconds.`);
-            }, JAMMING_TIMEOUT_MS);
-
             watchId = navigator.geolocation.watchPosition(
                 (position) => {
-                    // SUCCESS: We got a signal. Clear the old timer and set a new one.
-                    clearTimeout(jammingTimer);
-                    jammingTimer = setTimeout(() => {
-                         displayAlert('JAMMING', `The GPS signal was lost for more than ${JAMMING_TIMEOUT_MS / 1000} seconds.`);
-                    }, JAMMING_TIMEOUT_MS);
+                    // SUCCESS: We got a signal.
+                    clearTimeout(jammingTimer); // Always clear the previous timer.
 
-                    statusEl.textContent = "Monitoring Active...";
+                    // If this is the first time we get a signal, change status.
+                    if (!isFirstFixAcquired) {
+                        isFirstFixAcquired = true;
+                        statusEl.textContent = "Monitoring Active...";
+                    }
+                    
                     const { latitude, longitude } = position.coords;
                     latEl.textContent = latitude.toFixed(6);
                     lonEl.textContent = longitude.toFixed(6);
                     if(gpsWorker) gpsWorker.postMessage({ latitude, longitude });
+
+                    // Set a NEW timer. If we don't get another update in 10s, it's a jam.
+                    jammingTimer = setTimeout(() => {
+                         displayAlert('JAMMING', `The GPS signal was lost for more than ${JAMMING_TIMEOUT_MS / 1000} seconds.`);
+                    }, JAMMING_TIMEOUT_MS);
                 },
                 (error) => {
-                    // ERROR: Don't clear the timer here. Let it run out.
+                    // Let the jamming timer run out if the signal is temporarily lost.
+                    // Only stop for a fatal permission error.
                     if (error.code === 1) { // PERMISSION_DENIED
-                        clearTimeout(jammingTimer); // Stop everything if permission denied
+                        clearTimeout(jammingTimer); 
                         statusEl.textContent = `Error: Location permission denied.`;
                         startButton.style.display = 'block';
-                    } else {
+                    } else if (isFirstFixAcquired) {
                         statusEl.textContent = "GPS signal lost...";
                     }
                 },
